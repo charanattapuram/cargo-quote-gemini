@@ -3,21 +3,42 @@ import google.generativeai as genai
 import datetime
 import random
 import os
+from fpdf import FPDF
+import tempfile
 
 # -------------------------------------------------------------------
 # 1. Page config
 # -------------------------------------------------------------------
 st.set_page_config(page_title="AI Air Cargo Quotation", layout="wide")
 st.title("✈️ AI Air Cargo Quotation Assistant")
-st.markdown("Enter shipment details – we calculate the chargeable weight and generate a professional quotation instantly.")
+st.markdown("Enter your **Gemini API key** below, then fill the shipment details to get a professional quotation and a downloadable PDF.")
 
 # -------------------------------------------------------------------
-# 2. Constants & Mock Rate Engine
+# 2. API Key input (stored in session state)
 # -------------------------------------------------------------------
-# Volumetric divisor (IATA standard: 1 kg = 6000 cm³)
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
+
+api_key_input = st.text_input(
+    "🔑 Enter your Gemini API Key",
+    type="password",
+    value=st.session_state.api_key,
+    help="Get it free at https://aistudio.google.com/apikey"
+)
+
+if api_key_input:
+    st.session_state.api_key = api_key_input
+    # Configure gemini with the provided key
+    genai.configure(api_key=api_key_input)
+    st.success("✅ API key set. You can now generate quotations.")
+else:
+    st.warning("⚠️ Please enter a valid Gemini API key to use the assistant.")
+
+# -------------------------------------------------------------------
+# 3. Constants & Mock Rate Engine
+# -------------------------------------------------------------------
 VOL_DIVISOR = 6000
 
-# Base freight rates per kg by region pair (simplified)
 REGION_RATES = {
     ("Asia", "Middle East"): 2.5,
     ("Asia", "Europe"): 3.2,
@@ -27,14 +48,12 @@ REGION_RATES = {
     "default": 3.5
 }
 
-# Urgency multiplier
 URGENCY_MULT = {
     "Standard": 1.0,
     "Express": 1.8,
     "Same Day": 3.2
 }
 
-# Cargo type surcharge per kg
 CARGO_SURCHARGE = {
     "General": 0.0,
     "Pharmaceutical": 1.2,
@@ -43,7 +62,7 @@ CARGO_SURCHARGE = {
 }
 
 # -------------------------------------------------------------------
-# 3. Helper: determine region from city (simple mapping)
+# 4. Helper functions
 # -------------------------------------------------------------------
 def get_region(city):
     city = city.lower()
@@ -57,9 +76,6 @@ def get_region(city):
         return "North America"
     return "default"
 
-# -------------------------------------------------------------------
-# 4. Core calculation
-# -------------------------------------------------------------------
 def calculate_quote(weight, dims, origin_city, dest_city, urgency, cargo_type):
     l, w, h = dims
     gross_weight = weight
@@ -90,18 +106,9 @@ def calculate_quote(weight, dims, origin_city, dest_city, urgency, cargo_type):
         "currency": "USD"
     }
 
-# -------------------------------------------------------------------
-# 5. Gemini setup
-# -------------------------------------------------------------------
-api_key = os.getenv("GEMINI_API_KEY")
-
-if api_key:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-3.5-flash")
-else:
-    model = None
-
 def generate_quotation_text(calc, origin, dest, urgency, cargo_type):
+    """Use Gemini to format the calculated numbers into a professional quotation."""
+    model = genai.GenerativeModel("gemini-3.1-pro")
     prompt = f"""
 You are a professional air cargo quotation writer for ORBEM Solutions.
 Create a formal, structured freight quotation using the precise numbers provided.
@@ -122,17 +129,63 @@ Include:
 - Total freight charge: ${calc['freight_charge']}
 - Payment terms: 100% advance
 - Validity: 7 days
-- Estimated transit time: (based on urgency: Standard 3-5 days, Express 1-2 days, Same Day – same day)
-- Note about surcharges: (explain what is included – fuel, handling, and any special requirements for {cargo_type})
+- Estimated transit time: (Standard 3-5 days, Express 1-2 days, Same Day – same day)
+- Note about surcharges: (explain what's included – fuel, handling, and any special requirements for {cargo_type})
 
-Format with clean headings, bullet points, and a polite closing.
+Format with clean headings, bullet points, and a polite closing. Use plain text (no markdown bold/italic, use uppercase for headings).
 """
     response = model.generate_content(prompt)
     return response.text
 
 # -------------------------------------------------------------------
-# 6. UI
+# 5. PDF generation
 # -------------------------------------------------------------------
+class QuotationPDF(FPDF):
+    def header(self):
+        self.set_font("Arial", "B", 16)
+        self.cell(0, 10, "ORBEM Solutions Air Cargo Quotation", ln=True, align="C")
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Arial", "I", 8)
+        self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
+
+def create_pdf(quotation_text, ref_number):
+    """Generate a PDF from the quotation text."""
+    pdf = QuotationPDF()
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Add content
+    pdf.set_font("Arial", size=12)
+    # Split text into lines and add them, preserving structure
+    for line in quotation_text.split('\n'):
+        line = line.strip()
+        if not line:
+            pdf.ln(4)
+            continue
+
+        # Detect headings (all caps lines, or lines ending with ':')
+        if line.isupper() or (len(line) < 60 and line.endswith(":")):
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 8, line, ln=True)
+            pdf.set_font("Arial", size=12)
+        else:
+            pdf.multi_cell(0, 6, line)
+
+    # Save to a temporary file
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(temp_file.name)
+    return temp_file.name
+
+# -------------------------------------------------------------------
+# 6. UI – Shipment inputs
+# -------------------------------------------------------------------
+st.divider()
+st.subheader("📦 Shipment Details")
+
 col1, col2 = st.columns(2)
 
 with col1:
@@ -147,19 +200,20 @@ with col2:
     urgency = st.selectbox("Urgency", ["Standard", "Express", "Same Day"])
     cargo_type = st.selectbox("Cargo Type", ["General", "Pharmaceutical", "Perishable", "Dangerous Goods"])
 
-if not api_key:
-    st.warning("⚠️ **GEMINI_API_KEY not set.** Add your Gemini API key in Replit Secrets (key: `GEMINI_API_KEY`) to enable AI quotation generation.")
-
+# -------------------------------------------------------------------
+# 7. Generate button + output
+# -------------------------------------------------------------------
 if st.button("Generate Quotation", type="primary"):
-    if not origin or not destination:
-        st.error("Please fill in origin and destination.")
-    elif not api_key:
-        st.error("Please add your GEMINI_API_KEY in Replit Secrets before generating a quotation.")
+    if not st.session_state.api_key:
+        st.error("❌ Please enter your Gemini API key first!")
+    elif not origin or not destination:
+        st.error("❌ Please fill in both origin and destination.")
     else:
         dims = (length, width, height)
-        with st.spinner("Calculating chargeable weight and generating quotation..."):
+        with st.spinner("Calculating chargeable weight..."):
             calc = calculate_quote(weight, dims, origin, destination, urgency, cargo_type)
 
+            # Show breakdown
             st.subheader("📊 Chargeable Weight Breakdown")
             c1, c2, c3 = st.columns(3)
             c1.metric("Gross Weight", f"{calc['gross_weight']} kg")
@@ -173,11 +227,21 @@ if st.button("Generate Quotation", type="primary"):
             r2.metric("After Urgency & Cargo Surcharge", f"${calc['effective_rate_per_kg']}/kg")
             r3.metric("Total Freight", f"${calc['freight_charge']}")
 
-            with st.spinner("Formatting professional quotation via Gemini AI..."):
-                try:
-                    quotation = generate_quotation_text(calc, origin, destination, urgency, cargo_type)
-                    st.success("Quotation Ready!")
-                    st.markdown(quotation)
-                    st.text_area("Copy-ready version", value=quotation, height=300)
-                except Exception as e:
-                    st.error(f"Gemini API error: {e}")
+            # Generate quotation via Gemini
+            with st.spinner("Formatting professional quotation..."):
+                quotation = generate_quotation_text(calc, origin, destination, urgency, cargo_type)
+
+            st.success("✅ Quotation Ready!")
+            st.markdown(quotation)
+
+            # Create downloadable PDF
+            ref_number = f"QT-{datetime.date.today().strftime('%Y%m%d')}-{random.randint(1000,9999)}"
+            pdf_path = create_pdf(quotation, ref_number)
+
+            with open(pdf_path, "rb") as f:
+                st.download_button(
+                    label="📥 Download as PDF",
+                    data=f,
+                    file_name=f"{ref_number}.pdf",
+                    mime="application/pdf"
+                )
