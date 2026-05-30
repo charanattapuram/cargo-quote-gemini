@@ -2,39 +2,61 @@ import streamlit as st
 import google.generativeai as genai
 import datetime
 import random
-import os
 from fpdf import FPDF
 import tempfile
 
 # -------------------------------------------------------------------
-# 1. Page config
+# Page config
 # -------------------------------------------------------------------
 st.set_page_config(page_title="AI Air Cargo Quotation", layout="wide")
 st.title("✈️ AI Air Cargo Quotation Assistant")
-st.markdown("Enter your **Gemini API key** below, then fill the shipment details to get a professional quotation and a downloadable PDF.")
+st.markdown("Generate a professional air freight quotation instantly.")
 
 # -------------------------------------------------------------------
-# 2. API Key input (stored in session state)
+# API Key handling – default from secrets, fallback to user input
 # -------------------------------------------------------------------
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 
-api_key_input = st.text_input(
-    "🔑 Enter your Gemini API Key",
-    type="password",
-    value=st.session_state.api_key,
-    help="Get it free at https://aistudio.google.com/apikey"
-)
+# 1) Try to load default key from Streamlit secrets (safe, not in code)
+default_key = st.secrets.get("GEMINI_API_KEY", "")
 
-if api_key_input:
-    st.session_state.api_key = api_key_input
-    genai.configure(api_key=api_key_input)
-    st.success("✅ API key set. You can now generate quotations.")
+# 2) If there's a default key and user hasn't entered one, use it
+if default_key and not st.session_state.api_key:
+    st.session_state.api_key = default_key
+
+# 3) UI for key input (shown only if no default key, or user wants to override)
+if default_key:
+    # Default key is set – app works out of the box
+    use_custom = st.checkbox("🔑 Use my own API key instead", value=False)
+    if use_custom:
+        api_key_input = st.text_input(
+            "Enter your Gemini API Key",
+            type="password",
+            value=st.session_state.api_key if st.session_state.api_key != default_key else "",
+            help="Get it free at https://aistudio.google.com/apikey"
+        )
+        if api_key_input:
+            st.session_state.api_key = api_key_input
+    else:
+        st.success("✅ Using default demo API key. The app is ready to use.")
 else:
-    st.warning("⚠️ Please enter a valid Gemini API key to use the assistant.")
+    # No default key – user must paste one
+    api_key_input = st.text_input(
+        "🔑 Enter your Gemini API Key",
+        type="password",
+        value=st.session_state.api_key,
+        help="Get it free at https://aistudio.google.com/apikey"
+    )
+    if api_key_input:
+        st.session_state.api_key = api_key_input
+
+# Configure Gemini if we have a key
+if st.session_state.api_key:
+    genai.configure(api_key=st.session_state.api_key)
 
 # -------------------------------------------------------------------
-# 3. Constants & Mock Rate Engine
+# Constants & Mock Rate Engine (unchanged)
 # -------------------------------------------------------------------
 VOL_DIVISOR = 6000
 
@@ -61,7 +83,7 @@ CARGO_SURCHARGE = {
 }
 
 # -------------------------------------------------------------------
-# 4. Helper functions
+# Helper functions (unchanged)
 # -------------------------------------------------------------------
 def get_region(city):
     city = city.lower()
@@ -136,7 +158,7 @@ Format with clean headings, bullet points, and a polite closing. Use plain text 
     return response.text
 
 # -------------------------------------------------------------------
-# 5. PDF generation – FIXED
+# PDF generation (unchanged)
 # -------------------------------------------------------------------
 class QuotationPDF(FPDF):
     def header(self):
@@ -161,24 +183,20 @@ def create_pdf(quotation_text, ref_number):
         if not line:
             pdf.ln(4)
             continue
-
-        # Handle headings: all caps or short lines ending with colon
         if line.isupper() or (len(line) < 60 and line.endswith(":")):
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 8, line, ln=True)
             pdf.set_font("Arial", size=12)
         else:
-            # Use write() which automatically wraps long lines
             pdf.write(6, line)
-            pdf.ln()  # Move to next line after writing
+            pdf.ln()
 
-    # Save to a temporary file
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(temp_file.name)
     return temp_file.name
 
 # -------------------------------------------------------------------
-# 6. UI – Shipment inputs
+# UI – Shipment inputs (unchanged)
 # -------------------------------------------------------------------
 st.divider()
 st.subheader("📦 Shipment Details")
@@ -197,12 +215,9 @@ with col2:
     urgency = st.selectbox("Urgency", ["Standard", "Express", "Same Day"])
     cargo_type = st.selectbox("Cargo Type", ["General", "Pharmaceutical", "Perishable", "Dangerous Goods"])
 
-# -------------------------------------------------------------------
-# 7. Generate button + output
-# -------------------------------------------------------------------
 if st.button("Generate Quotation", type="primary"):
     if not st.session_state.api_key:
-        st.error("❌ Please enter your Gemini API key first!")
+        st.error("❌ Please enter a Gemini API key!")
     elif not origin or not destination:
         st.error("❌ Please fill in both origin and destination.")
     else:
@@ -229,7 +244,6 @@ if st.button("Generate Quotation", type="primary"):
             st.success("✅ Quotation Ready!")
             st.markdown(quotation)
 
-            # Create downloadable PDF (now fixed)
             ref_number = f"QT-{datetime.date.today().strftime('%Y%m%d')}-{random.randint(1000,9999)}"
             pdf_path = create_pdf(quotation, ref_number)
 
