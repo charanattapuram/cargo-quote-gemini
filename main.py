@@ -28,7 +28,6 @@ api_key_input = st.text_input(
 
 if api_key_input:
     st.session_state.api_key = api_key_input
-    # Configure gemini with the provided key
     genai.configure(api_key=api_key_input)
     st.success("✅ API key set. You can now generate quotations.")
 else:
@@ -107,8 +106,7 @@ def calculate_quote(weight, dims, origin_city, dest_city, urgency, cargo_type):
     }
 
 def generate_quotation_text(calc, origin, dest, urgency, cargo_type):
-    """Use Gemini to format the calculated numbers into a professional quotation."""
-    model = genai.GenerativeModel("gemini-3.1-pro")
+    model = genai.GenerativeModel("gemini-3.5-flash")
     prompt = f"""
 You are a professional air cargo quotation writer for ORBEM Solutions.
 Create a formal, structured freight quotation using the precise numbers provided.
@@ -138,7 +136,7 @@ Format with clean headings, bullet points, and a polite closing. Use plain text 
     return response.text
 
 # -------------------------------------------------------------------
-# 5. PDF generation
+# 5. PDF generation – FIXED
 # -------------------------------------------------------------------
 class QuotationPDF(FPDF):
     def header(self):
@@ -152,28 +150,27 @@ class QuotationPDF(FPDF):
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
 
 def create_pdf(quotation_text, ref_number):
-    """Generate a PDF from the quotation text."""
     pdf = QuotationPDF()
     pdf.alias_nb_pages()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
-
-    # Add content
     pdf.set_font("Arial", size=12)
-    # Split text into lines and add them, preserving structure
+
     for line in quotation_text.split('\n'):
         line = line.strip()
         if not line:
             pdf.ln(4)
             continue
 
-        # Detect headings (all caps lines, or lines ending with ':')
+        # Handle headings: all caps or short lines ending with colon
         if line.isupper() or (len(line) < 60 and line.endswith(":")):
             pdf.set_font("Arial", "B", 12)
             pdf.cell(0, 8, line, ln=True)
             pdf.set_font("Arial", size=12)
         else:
-            pdf.multi_cell(0, 6, line)
+            # Use write() which automatically wraps long lines
+            pdf.write(6, line)
+            pdf.ln()  # Move to next line after writing
 
     # Save to a temporary file
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
@@ -213,7 +210,6 @@ if st.button("Generate Quotation", type="primary"):
         with st.spinner("Calculating chargeable weight..."):
             calc = calculate_quote(weight, dims, origin, destination, urgency, cargo_type)
 
-            # Show breakdown
             st.subheader("📊 Chargeable Weight Breakdown")
             c1, c2, c3 = st.columns(3)
             c1.metric("Gross Weight", f"{calc['gross_weight']} kg")
@@ -227,14 +223,13 @@ if st.button("Generate Quotation", type="primary"):
             r2.metric("After Urgency & Cargo Surcharge", f"${calc['effective_rate_per_kg']}/kg")
             r3.metric("Total Freight", f"${calc['freight_charge']}")
 
-            # Generate quotation via Gemini
             with st.spinner("Formatting professional quotation..."):
                 quotation = generate_quotation_text(calc, origin, destination, urgency, cargo_type)
 
             st.success("✅ Quotation Ready!")
             st.markdown(quotation)
 
-            # Create downloadable PDF
+            # Create downloadable PDF (now fixed)
             ref_number = f"QT-{datetime.date.today().strftime('%Y%m%d')}-{random.randint(1000,9999)}"
             pdf_path = create_pdf(quotation, ref_number)
 
